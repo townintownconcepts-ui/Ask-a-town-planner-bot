@@ -1,74 +1,76 @@
-const express = require('express');
-const cors = require('cors');
-const app = express();
-app.use(cors());
+const express=require('express');
+const app=express();
 app.use(express.json());
-app.use(express.urlencoded({extended:true}));
 
-let credits = {}; // stores all paid numbers automatically
+let credits={};
 
-// HOME PAGE - YOUR BOT WEBSITE
 app.get('/', (req,res)=>{
  res.send(`
- <h2>Ask A Town Planner - Lagos</h2>
- <p>Pay N2000 to ask any town planning question</p>
- <input id="phone" placeholder="080... phone used for payment" style="width:300px;padding:10px"><br><br>
- <textarea id="q" placeholder="Your question..." style="width:300px;height:100px"></textarea><br><br>
- <button onclick="ask()" style="padding:10px 20px;background:green;color:white">ASK EXPERT</button>
- <p id="ans"></p>
- <script>
- async function ask(){
-   let phone=document.getElementById('phone').value;
-   let question=document.getElementById('q').value;
-   let r=await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,question})});
-   let d=await r.json();
-   document.getElementById('ans').innerText=d.answer||d.error;
- }
- </script>
+<h2>Ask A Town Planner - Lagos</h2>
+<p>Pay N2000 to ask any town planning question</p>
+<p><a href="https://paystack.com/pay/ask-a-town-planner" target="_blank" style="background:green;color:white;padding:10px;text-decoration:none;">CLICK HERE TO PAY N2000</a></p>
+<input id="phone" placeholder="080... phone used to pay"><br><br>
+<textarea id="q" placeholder="Your question" style="width:300px;height:100px"></textarea><br><br>
+<button onclick="ask()" style="padding:10px;background:green;color:white;">ASK EXPERT</button>
+<p id="ans"></p>
+<script>
+async function ask(){
+ let phone=document.getElementById('phone').value;
+ let question=document.getElementById('q').value;
+ document.getElementById('ans').innerText='Checking...';
+ let r=await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,question})});
+ let d=await r.json();
+ document.getElementById('ans').innerText=d.answer||d.error;
+}
+</script>
  `)
+});
+
+// PAYSTACK WEBHOOK - gives credit automatically after pay
+app.post('/paystack-webhook', (req,res)=>{
+  let phone=(req.body.data?.metadata?.phone||'').replace(/\D/g,'').slice(-10);
+  if(phone){
+    credits[phone]=(credits[phone]||0)+1;
+    console.log('Credit for '+phone);
+  }
+  res.sendStatus(200);
 });
 
 // ASK EXPERT
 app.post('/ask', async (req,res)=>{
- let {phone, question}=req.body;
- phone=phone.replace(/\D/g,'').slice(-11);
- if(!credits[phone] || credits[phone]<=0) return res.json({error:"No credit. Please pay first on Paystack. Use same phone number."});
+  let {phone, question}=req.body;
+  phone=phone.replace(/\D/g,'').slice(-10);
+  if(!credits[phone] || credits[phone]<=0){
+    return res.json({error:'No credit. Please pay first on Paystack. Use same phone number.'});
+  }
 
- // CALL AI (Groq)
- try{
-   let aiRes = await fetch('https://api.groq.com/openai/v1/chat/completions',{
-     method:'POST',
-     headers:{'Content-Type':'application/json','Authorization':'Bearer '+process.env.GROQ_KEY},
-     body: JSON.stringify({
-       model:'llama-3.1-8b-instant',
-       messages:[
-         {role:'system',content:'You are a Registered Town Planner in Lagos, Nigeria. Expert in LASPPPA, LASBCA, setbacks, building approval, C of O. Answer professionally.'},
-         {role:'user',content:question}
-       ]
-     })
-   });
-   let data=await aiRes.json();
-   let answer=data.choices[0].message.content;
-   credits[phone]--;
-   res.json({answer});
- }catch(e){res.json({error:"AI error, try again"})}
+  // CALL AI (Groq)
+  try{
+    let aiRes = await fetch('https://api.groq.com/openai/v1/chat/completions',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+process.env.GROQ_KEY},
+        body: JSON.stringify({
+          model:'llama-3.1-8b-instant',
+          messages:[
+            {role:'system',content:'You are a Lagos Town Planning expert. Answer simple and professional. Mention LASPPPA, setbacks, approvals.'},
+            {role:'user',content:question}
+          ]
+        })
+    });
+    let aiData = await aiRes.json();
+    let answer = aiData.choices[0].message.content;
+    credits[phone]--;
+    res.json({answer:answer+'\n\n(Credits left: '+credits[phone]+')'});
+  }catch(e){
+    res.json({error:'AI error: '+e.message});
+  }
 });
 
-// PAYSTACK WEBHOOK - AUTOMATIC CREDIT
-app.post('/paystack-webhook', (req,res)=>{
- let event=req.body;
- if(event.event==='charge.success'){
-   let phone = (event.data.metadata?.phone || event.data.customer?.phone || '').replace(/\D/g,'').slice(-11);
-   if(phone){
-     credits[phone]=(credits[phone]||0)+1;
-     console.log('CREDIT ADDED FOR:',phone);
-   }
- }
- res.sendStatus(200);
-});
+// MANUAL GIVE CREDIT (for you to test)
 app.get('/give-credit', (req,res)=>{
-  let phone=(req.query.phone||'').replace(/\D/g,'').slice(-11);
+  let phone=(req.query.phone||'').replace(/\D/g,'').slice(-10);
   credits[phone]=(credits[phone]||0)+5;
-  res.send('Credit added for '+phone);
+  res.send('Credit added for '+phone+' - you now have '+credits[phone]+' credits. Go back and ask!');
 });
-app.listen(10000, ()=>console.log('LIVE'));
+
+app.listen(10000, ()=>console.log('Running'));
