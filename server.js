@@ -4,7 +4,7 @@ const PORT = process.env.PORT || 10000;
 
 const PAYSTACK_LINK = "https://paystack.shop/pay/r3idx7vvad";
 
-let credits = {};
+let credits = {"08025933210":1};
 app.use(express.json());
 
 function normalizePhone(p){
