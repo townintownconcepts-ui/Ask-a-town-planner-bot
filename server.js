@@ -1,53 +1,70 @@
 const express = require('express');
+const cors = require('cors');
 const app = express();
-const PORT = process.env.PORT || 10000;
-
-const PAYSTACK_LINK = "https://paystack.shop/pay/r3idx7vvad";
-
-let credits = {"08025933210":1};
+app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({extended:true}));
 
-function normalizePhone(p){
-  if(!p) return null;
-  p = p.toString().replace(/\s+/g,'');
-  if(p.startsWith('+234')) return '0'+p.slice(4);
-  if(p.startsWith('234')) return '0'+p.slice(3);
-  return p;
-}
+let credits = {}; // stores all paid numbers automatically
 
-app.post('/paystack-webhook', (req,res)=>{
-  try{
-    const event = req.body;
-    if(event.event === 'charge.success'){
-      const phone = normalizePhone(event.data.customer?.phone || event.data.metadata?.phone);
-      if(phone){
-        credits[phone] = (credits[phone]||0) + 1;
-        console.log(`CREDIT: ${phone} = ${credits[phone]}`);
-      }
-    }
-  }catch(e){}
-  res.sendStatus(200);
-});
-
-app.post('/ask', (req,res)=>{
-  const phone = normalizePhone(req.body.phone);
-  const q = req.body.question;
-  if(!phone ||!q) return res.json({reply:"Enter phone + question"});
-
-  if((credits[phone]||0) <= 0){
-    return res.json({reply:`No credit. Pay ₦2000 here: ${PAYSTACK_LINK} then use phone ${phone}`, needPay:true, payLink: PAYSTACK_LINK});
-  }
-  credits[phone]--;
-  const reply = `🏛️ LAGOS TOWN PLANNING:\n\nQuery: "${q}"\n\n1. Setback: 3m front, 1.5m side (LASPPPA)\n2. Verify C of O at Lands Bureau\n3. Submit via e-planning with drawings\n\nRemaining credits: ${credits[phone]}\n\n- Town In Town Concepts`;
-  res.json({reply, credits: credits[phone]});
-});
-
+// HOME PAGE - YOUR BOT WEBSITE
 app.get('/', (req,res)=>{
-  res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ask Town Planner</title>
-<style>body{font-family:sans-serif;max-width:500px;margin:auto;padding:20px;background:#f5f7fb}.card{background:white;padding:20px;border-radius:12px}input,textarea{width:100%;padding:12px;margin:8px 0;border:1px solid #ddd;border-radius:8px}button{background:#1e40af;color:white;padding:14px;border:none;border-radius:8px;width:100%;font-weight:bold}.pay{display:block;background:#fbbf24;color:black;text-align:center;padding:14px;border-radius:8px;text-decoration:none;font-weight:bold;margin:12px 0}#ans{white-space:pre-wrap;background:#eef2ff;padding:12px;border-radius:8px;margin-top:12px}</style></head><body>
-<div class="card"><h2>🏛️ Ask A Town Planner - Lagos</h2><p>Pay ₦2,000 per question</p><a class="pay" href="${PAYSTACK_LINK}" target="_blank">💳 PAY ₦2,000 NOW</a>
-<input id="phone" placeholder="080... phone used for payment"/><textarea id="q" rows="4" placeholder="Your question..."></textarea><button onclick="ask()">ASK EXPERT</button><div id="ans">Test card: 4084 0840 8408 4081, 12/30, CVV 408, PIN 0000</div></div>
-<script>async function ask(){const phone=document.getElementById('phone').value;const question=document.getElementById('q').value;document.getElementById('ans').innerText='Thinking...';const r=await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,question})});const j=await r.json();document.getElementById('ans').innerText=j.reply;if(j.payLink){document.getElementById('ans').innerHTML=j.reply+'<br><br><a href=\\''+j.payLink+'\\' target=\\'_blank\\' style=\\'background:#fbbf24;padding:10px;display:block;text-align:center;border-radius:8px;text-decoration:none\\'>PAY NOW</a>';}}</script></body></html>`);
+ res.send(`
+ <h2>Ask A Town Planner - Lagos</h2>
+ <p>Pay N2000 to ask any town planning question</p>
+ <input id="phone" placeholder="080... phone used for payment" style="width:300px;padding:10px"><br><br>
+ <textarea id="q" placeholder="Your question..." style="width:300px;height:100px"></textarea><br><br>
+ <button onclick="ask()" style="padding:10px 20px;background:green;color:white">ASK EXPERT</button>
+ <p id="ans"></p>
+ <script>
+ async function ask(){
+   let phone=document.getElementById('phone').value;
+   let question=document.getElementById('q').value;
+   let r=await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,question})});
+   let d=await r.json();
+   document.getElementById('ans').innerText=d.answer||d.error;
+ }
+ </script>
+ `)
 });
 
-app.listen(PORT, ()=>console.log('Running'));
+// ASK EXPERT
+app.post('/ask', async (req,res)=>{
+ let {phone, question}=req.body;
+ phone=phone.replace(/\D/g,'').slice(-11);
+ if(!credits[phone] || credits[phone]<=0) return res.json({error:"No credit. Please pay first on Paystack. Use same phone number."});
+
+ // CALL AI (Groq)
+ try{
+   let aiRes = await fetch('https://api.groq.com/openai/v1/chat/completions',{
+     method:'POST',
+     headers:{'Content-Type':'application/json','Authorization':'Bearer '+process.env.GROQ_KEY},
+     body: JSON.stringify({
+       model:'llama-3.1-8b-instant',
+       messages:[
+         {role:'system',content:'You are a Registered Town Planner in Lagos, Nigeria. Expert in LASPPPA, LASBCA, setbacks, building approval, C of O. Answer professionally.'},
+         {role:'user',content:question}
+       ]
+     })
+   });
+   let data=await aiRes.json();
+   let answer=data.choices[0].message.content;
+   credits[phone]--;
+   res.json({answer});
+ }catch(e){res.json({error:"AI error, try again"})}
+});
+
+// PAYSTACK WEBHOOK - AUTOMATIC CREDIT
+app.post('/paystack-webhook', (req,res)=>{
+ let event=req.body;
+ if(event.event==='charge.success'){
+   let phone = (event.data.metadata?.phone || event.data.customer?.phone || '').replace(/\D/g,'').slice(-11);
+   if(phone){
+     credits[phone]=(credits[phone]||0)+1;
+     console.log('CREDIT ADDED FOR:',phone);
+   }
+ }
+ res.sendStatus(200);
+});
+
+app.listen(10000, ()=>console.log('LIVE'));
