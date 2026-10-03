@@ -66,5 +66,9 @@ app.post('/paystack-webhook', (req,res)=>{
  }
  res.sendStatus(200);
 });
-
+app.get('/give-credit', (req,res)=>{
+  let phone=(req.query.phone||'').replace(/\D/g,'').slice(-11);
+  credits[phone]=(credits[phone]||0)+5;
+  res.send('Credit added for '+phone);
+});
 app.listen(10000, ()=>console.log('LIVE'));
